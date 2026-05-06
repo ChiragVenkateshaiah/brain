@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brain"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "typer",
+    "rich",
+    "numpy",
+    "ollama",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+brain = "brain.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
