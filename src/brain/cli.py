@@ -1,1 +1,149 @@
 """Typer entry point for the `brain` command."""
+
+import os
+import time
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+
+from brain import embed, storage
+from brain.chunker import chunk_text
+
+app = typer.Typer(add_completion=False)
+console = Console()
+
+_HIDDEN_DIRS = {".git", ".venv", "node_modules", "__pycache__"}
+
+
+def _data_dir() -> Path:
+    p = Path(os.environ.get("BRAIN_DATA_DIR", Path.home() / ".brain")).expanduser()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _db_path() -> Path:
+    return _data_dir() / "corpus.db"
+
+
+def _walk_files(root: Path):
+    for p in root.rglob("*"):
+        if any(part.startswith(".") or part in _HIDDEN_DIRS for part in p.parts[len(root.parts):]):
+            continue
+        if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
+            yield p
+
+
+@app.command()
+def ingest(path: Path = typer.Argument(..., help="Directory to ingest")) -> None:
+    """Walk a directory and ingest .md and .txt files into the corpus."""
+    if not path.exists() or not path.is_dir():
+        console.print(f"[red]Error:[/red] {path} is not a directory")
+        raise typer.Exit(1)
+
+    db_path = _db_path()
+    conn = storage.connect(str(db_path))
+    storage.init_db(conn)
+
+    files = list(_walk_files(path))
+    if not files:
+        console.print(f"No .md or .txt files found in {path}")
+        return
+
+    processed = 0
+    skipped = 0
+    total_chunks = 0
+    start = time.monotonic()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Ingesting", total=len(files))
+
+        for file_path in files:
+            abs_path = str(file_path.resolve())
+            try:
+                mtime = file_path.stat().st_mtime
+            except OSError as e:
+                console.print(f"[yellow]Warning:[/yellow] could not stat {file_path}: {e}")
+                progress.advance(task)
+                continue
+
+            existing = storage.get_document(conn, abs_path)
+            if existing and existing[1] == mtime:
+                skipped += 1
+                progress.advance(task)
+                continue
+
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                console.print(f"[yellow]Warning:[/yellow] could not read {file_path}: {e}")
+                progress.advance(task)
+                continue
+
+            chunks = chunk_text(text)
+
+            if chunks:
+                try:
+                    embeddings = embed.embed(chunks)
+                except embed.EmbedError as e:
+                    console.print(f"[yellow]Warning:[/yellow] embedding failed for {file_path}: {e}")
+                    progress.advance(task)
+                    continue
+            else:
+                embeddings = []
+
+            if existing:
+                storage.delete_chunks_for_document(conn, existing[0])
+
+            doc_id = storage.upsert_document(conn, abs_path, mtime)
+            if chunks:
+                storage.insert_chunks(conn, doc_id, list(zip(chunks, embeddings)))
+                total_chunks += len(chunks)
+
+            processed += 1
+            progress.advance(task)
+
+    elapsed = time.monotonic() - start
+    console.print(
+        f"[green]Done[/green] — {processed} files ingested, {skipped} skipped, "
+        f"{total_chunks} chunks created ({elapsed:.1f}s)"
+    )
+
+
+@app.command()
+def stats() -> None:
+    """Show corpus statistics."""
+    db_path = _db_path()
+    if not db_path.exists():
+        console.print("No corpus found. Run [bold]brain ingest[/bold] first.")
+        raise typer.Exit(1)
+
+    conn = storage.connect(str(db_path))
+    storage.init_db(conn)
+    s = storage.corpus_stats(conn, str(db_path))
+
+    size_bytes = s["disk_size_bytes"]
+    if size_bytes >= 1024 * 1024:
+        size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        size_str = f"{size_bytes / 1024:.1f} KB"
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+    table.add_row("Corpus", s["db_path"])
+    table.add_row("Documents", str(s["documents"]))
+    table.add_row("Chunks", str(s["chunks"]))
+    table.add_row("Total tokens (approx)", str(s["approx_tokens"]))
+    table.add_row("Embedding model", s["embed_model"])
+    table.add_row("Disk size", size_str)
+
+    console.print(table)
