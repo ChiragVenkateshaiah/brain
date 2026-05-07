@@ -83,6 +83,21 @@ def insert_chunks(
     return len(rows)
 
 
+def get_all_chunks_with_embeddings(
+    conn: sqlite3.Connection,
+) -> list[tuple[int, str, str, np.ndarray]]:
+    """Return (chunk_id, document_path, chunk_text, embedding) for every chunk."""
+    rows = conn.execute(
+        """
+        SELECT c.id, d.path, c.text, c.embedding
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        ORDER BY c.id
+        """
+    ).fetchall()
+    return [(row[0], row[1], row[2], np.frombuffer(row[3], dtype=np.float32)) for row in rows]
+
+
 def corpus_stats(conn: sqlite3.Connection, db_path: str) -> dict:
     from brain.embed import _default_model
 
