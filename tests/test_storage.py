@@ -131,6 +131,26 @@ def test_corpus_stats_empty_db(conn, tmp_path, monkeypatch):
     real_conn.close()
 
 
+def test_get_all_chunks_with_embeddings_roundtrip(conn):
+    doc1 = storage.upsert_document(conn, "/a.md", 1.0)
+    doc2 = storage.upsert_document(conn, "/b.md", 2.0)
+    emb = np.ones(768, dtype=np.float32)
+    storage.insert_chunks(conn, doc1, [("hello", emb), ("world", emb)])
+    storage.insert_chunks(conn, doc2, [("foo", emb), ("bar", emb)])
+
+    rows = storage.get_all_chunks_with_embeddings(conn)
+    assert len(rows) == 4
+    chunk_id, path, text, arr = rows[0]
+    assert isinstance(chunk_id, int)
+    assert path in {"/a.md", "/b.md"}
+    assert isinstance(text, str)
+    assert arr.shape == (768,)
+    assert arr.dtype == np.float32
+    # ORDER BY c.id is stable
+    ids = [r[0] for r in rows]
+    assert ids == sorted(ids)
+
+
 def test_corpus_stats_populated_db(conn, tmp_path, monkeypatch):
     monkeypatch.setenv("BRAIN_EMBED_MODEL", "nomic-embed-text")
     db_path = str(tmp_path / "corpus.db")

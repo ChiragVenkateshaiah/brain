@@ -10,6 +10,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from rich.table import Table
 
 from brain import embed, storage
+from brain import search as search_mod
 from brain.chunker import chunk_text
 
 app = typer.Typer(add_completion=False)
@@ -116,6 +117,49 @@ def ingest(path: Path = typer.Argument(..., help="Directory to ingest")) -> None
         f"[green]Done[/green] — {processed} files ingested, {skipped} skipped, "
         f"{total_chunks} chunks created ({elapsed:.1f}s)"
     )
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Search query"),
+    top: int = typer.Option(5, "--top", "-k", help="Number of results"),
+) -> None:
+    """Search the corpus for chunks matching the query."""
+    if not query.strip():
+        console.print("[red]Error:[/red] empty query")
+        raise typer.Exit(1)
+
+    db_path = _db_path()
+    if not db_path.exists():
+        console.print("No corpus found. Run [bold]brain ingest[/bold] first.")
+        raise typer.Exit(1)
+
+    conn = storage.connect(str(db_path))
+    storage.init_db(conn)
+
+    try:
+        results = search_mod.search(conn, query, top_k=top)
+    except embed.EmbedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    if not results:
+        console.print("No results.")
+        return
+
+    table = Table(show_header=True, box=None, padding=(0, 2))
+    table.add_column("#", style="bold")
+    table.add_column("Score")
+    table.add_column("Document")
+    table.add_column("Snippet")
+
+    for rank, r in enumerate(results, 1):
+        snippet = " ".join(r.text.split())
+        if len(snippet) > 117:
+            snippet = snippet[:117] + "…"
+        table.add_row(str(rank), f"{r.score:.4f}", r.path, snippet)
+
+    console.print(table)
 
 
 @app.command()

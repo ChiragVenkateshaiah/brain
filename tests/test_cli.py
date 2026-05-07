@@ -124,6 +124,52 @@ def test_ingest_nonexistent_path(brain_dir):
     assert result.exit_code != 0
 
 
+def test_search_no_corpus_errors(brain_dir):
+    result = runner.invoke(app, ["search", "hello"])
+    assert result.exit_code != 0
+    assert "No corpus" in result.output
+
+
+def test_search_basic_renders_table(fixture_dir, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    runner.invoke(app, ["ingest", str(fixture_dir)])
+    result = runner.invoke(app, ["search", "word"])
+    assert result.exit_code == 0
+    assert "Score" in result.output
+
+
+def test_search_top_flag_limits_rows(fixture_dir, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    runner.invoke(app, ["ingest", str(fixture_dir)])
+    result = runner.invoke(app, ["search", "x", "-k", "2"])
+    assert result.exit_code == 0
+    # Table rows: each data row contains a score like "0.0000"
+    score_lines = [l for l in result.output.splitlines() if "0.0000" in l]
+    assert len(score_lines) <= 2
+
+
+def test_search_empty_query_errors(brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    result = runner.invoke(app, ["search", "   "])
+    assert result.exit_code != 0
+    assert "Error" in result.output
+
+
+def test_search_embed_error_exits_nonzero(fixture_dir, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    runner.invoke(app, ["ingest", str(fixture_dir)])
+
+    from brain.embed import EmbedError
+
+    def boom(texts, **kw):
+        raise EmbedError("no ollama")
+
+    monkeypatch.setattr("brain.cli.embed.embed", boom)
+    result = runner.invoke(app, ["search", "anything"])
+    assert result.exit_code != 0
+    assert "Error" in result.output
+
+
 def test_ingest_skips_hidden_directories(tmp_path, brain_dir, monkeypatch):
     monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
     (tmp_path / "visible.md").write_text("visible content " * 50)
