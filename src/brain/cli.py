@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from brain import embed, storage
+from brain import embed, qa, storage
 from brain import search as search_mod
 from brain.chunker import chunk_text
 
@@ -160,6 +160,41 @@ def search(
         table.add_row(str(rank), f"{r.score:.4f}", r.path, snippet)
 
     console.print(table)
+
+
+@app.command()
+def ask(
+    query: str = typer.Argument(..., help="Question to answer"),
+    top: int = typer.Option(5, "--top", "-k", help="Chunks to retrieve"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Override chat model"),
+) -> None:
+    """Answer a question using retrieved chunks from the corpus."""
+    if not query.strip():
+        console.print("[red]Error:[/red] empty question")
+        raise typer.Exit(1)
+
+    db_path = _db_path()
+    if not db_path.exists():
+        console.print("No corpus found. Run [bold]brain ingest[/bold] first.")
+        raise typer.Exit(1)
+
+    conn = storage.connect(str(db_path))
+    storage.init_db(conn)
+
+    try:
+        answer = qa.ask(conn, query, top_k=top, model=model)
+        for token in answer.text_stream:
+            console.print(token, end="", soft_wrap=True)
+        console.print()
+
+        if answer.citations:
+            console.print()
+            console.print("[bold]Sources:[/bold]")
+            for i, path in enumerate(answer.citations, 1):
+                console.print(f"  [{i}] {path}")
+    except (embed.EmbedError, qa.QAError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
 
 
 @app.command()

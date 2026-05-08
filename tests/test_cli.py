@@ -170,6 +170,66 @@ def test_search_embed_error_exits_nonzero(fixture_dir, brain_dir, monkeypatch):
     assert "Error" in result.output
 
 
+def test_ask_no_corpus_exits_1(brain_dir):
+    result = runner.invoke(app, ["ask", "what is this?"])
+    assert result.exit_code != 0
+    assert "No corpus" in result.output
+
+
+def test_ask_empty_query_exits_1(brain_dir):
+    result = runner.invoke(app, ["ask", "   "])
+    assert result.exit_code != 0
+    assert "Error" in result.output
+
+
+def test_ask_streams_answer_and_prints_sources(fixture_dir, brain_dir, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    runner.invoke(app, ["ingest", str(fixture_dir)])
+
+    tokens = ["The", " answer", " is", " 42."]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, *, model, messages, stream=False, **kwargs):
+            for tok in tokens:
+                yield SimpleNamespace(message=SimpleNamespace(content=tok))
+
+    monkeypatch.setattr("brain.qa.ollama.Client", FakeClient)
+
+    result = runner.invoke(app, ["ask", "what is the answer?"])
+    assert result.exit_code == 0
+    assert "The answer is 42." in result.output
+    assert "Sources:" in result.output
+
+
+def test_ask_qaerror_exits_1(fixture_dir, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    runner.invoke(app, ["ingest", str(fixture_dir)])
+
+    import httpx
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, **kwargs):
+            def _failing():
+                raise httpx.ConnectError("refused")
+                yield
+
+            return _failing()
+
+    monkeypatch.setattr("brain.qa.ollama.Client", FakeClient)
+
+    result = runner.invoke(app, ["ask", "anything?"])
+    assert result.exit_code != 0
+    assert "Error" in result.output
+
+
 def test_ingest_skips_hidden_directories(tmp_path, brain_dir, monkeypatch):
     monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
     (tmp_path / "visible.md").write_text("visible content " * 50)
