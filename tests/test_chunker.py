@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from brain.chunker import chunk_text
+from brain.chunker import chunk_markdown, chunk_text
 
 
 def test_empty_string_returns_empty():
@@ -77,3 +77,61 @@ def test_negative_overlap_raises():
 def test_overlap_gte_target_raises():
     with pytest.raises(ValueError):
         chunk_text("hello", target_size=10, overlap=10)
+
+
+# --- chunk_markdown ---
+
+
+def test_chunk_markdown_empty_returns_empty():
+    assert chunk_markdown("") == []
+
+
+def test_chunk_markdown_no_headers_matches_chunk_text():
+    text = "word " * 300
+    assert chunk_markdown(text) == chunk_text(text)
+
+
+def test_chunk_markdown_single_section_short_body():
+    result = chunk_markdown("# Heading\n\nshort body")
+    assert len(result) == 1
+    assert result[0].startswith("# Heading")
+    assert "short body" in result[0]
+
+
+def test_chunk_markdown_heading_only_emits_chunk():
+    result = chunk_markdown("# Heading\n\n")
+    assert len(result) == 1
+    assert result[0] == "# Heading"
+
+
+def test_chunk_markdown_multiple_sections_each_has_own_heading():
+    text = "# Alpha\n\nalpha content\n\n# Beta\n\nbeta content"
+    result = chunk_markdown(text)
+    alpha_chunks = [c for c in result if "alpha content" in c]
+    beta_chunks = [c for c in result if "beta content" in c]
+    assert alpha_chunks and all("# Alpha" in c for c in alpha_chunks)
+    assert beta_chunks and all("# Beta" in c for c in beta_chunks)
+
+
+def test_chunk_markdown_long_section_splits_each_chunk_has_heading():
+    text = "# Section\n\n" + "x " * 800
+    result = chunk_markdown(text, target_size=200, overlap=20)
+    assert len(result) > 1
+    assert all(c.startswith("# Section") for c in result)
+
+
+def test_chunk_markdown_preamble_before_first_heading_kept():
+    text = "intro text\n\n# Heading\n\nbody"
+    result = chunk_markdown(text)
+    assert any("intro text" in c for c in result)
+    assert any("body" in c for c in result)
+
+
+def test_chunk_markdown_invalid_target_size_raises():
+    with pytest.raises(ValueError):
+        chunk_markdown("# H\n\nbody", target_size=0)
+
+
+def test_chunk_markdown_overlap_gte_target_raises():
+    with pytest.raises(ValueError):
+        chunk_markdown("# H\n\nbody", target_size=10, overlap=10)

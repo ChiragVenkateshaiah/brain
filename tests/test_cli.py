@@ -17,13 +17,16 @@ def _fake_embed(texts: list[str], **kwargs) -> list[np.ndarray]:
 
 
 @pytest.fixture
-def fixture_dir(tmp_path):
+def fixture_dir(tmp_path, monkeypatch):
     (tmp_path / "a.md").write_text("# Note A\n" + "word " * 200)
     (tmp_path / "b.txt").write_text("plain text " * 100)
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "c.md").write_text("nested markdown " * 50)
-    (tmp_path / "ignored.pdf").write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr("brain.ingest.parse_pdf", lambda p: "pdf content " * 50)
+    monkeypatch.setattr("brain.ingest.parse_html", lambda p: "html content " * 50)
+    (tmp_path / "d.pdf").write_bytes(b"%PDF-1.4 fake")
+    (tmp_path / "e.html").write_text("<html><body>content</body></html>")
     return tmp_path
 
 
@@ -36,24 +39,45 @@ def brain_dir(tmp_path, monkeypatch):
 
 
 def test_ingest_basic(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     result = runner.invoke(app, ["ingest", str(fixture_dir)])
     assert result.exit_code == 0
-    # Should process 3 md/txt files (a.md, b.txt, sub/c.md), skip the .pdf
-    assert "3 files ingested" in result.output
+    # a.md, b.txt, sub/c.md, d.pdf, e.html = 5 files
+    assert "5 files ingested" in result.output
 
 
-def test_ingest_skips_pdf(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+def test_ingest_includes_pdf(fixture_dir, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
     db_path = str(brain_dir / "corpus.db")
     conn = storage.connect(db_path)
     paths = [r[0] for r in conn.execute("SELECT path FROM documents").fetchall()]
-    assert not any(p.endswith(".pdf") for p in paths)
+    assert any(p.endswith(".pdf") for p in paths)
+
+
+def test_ingest_includes_html(fixture_dir, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
+    runner.invoke(app, ["ingest", str(fixture_dir)])
+    db_path = str(brain_dir / "corpus.db")
+    conn = storage.connect(db_path)
+    paths = [r[0] for r in conn.execute("SELECT path FROM documents").fetchall()]
+    assert any(p.endswith(".html") for p in paths)
+
+
+def test_ingest_pdf_parse_error_continues(fixture_dir, brain_dir, monkeypatch):
+    from brain.parsers import ParseError
+
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.parse_pdf", lambda p: (_ for _ in ()).throw(ParseError("bad")))
+    result = runner.invoke(app, ["ingest", str(fixture_dir)])
+    assert result.exit_code == 0
+    assert "Warning" in result.output
+    # The other 4 files (a.md, b.txt, sub/c.md, e.html) should still ingest
+    assert "4 files ingested" in result.output
 
 
 def test_ingest_chunk_count(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
     db_path = str(brain_dir / "corpus.db")
     conn = storage.connect(db_path)
@@ -62,7 +86,7 @@ def test_ingest_chunk_count(fixture_dir, brain_dir, monkeypatch):
 
 
 def test_reingest_unchanged_files_skipped(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
 
     db_path = str(brain_dir / "corpus.db")
@@ -71,14 +95,14 @@ def test_reingest_unchanged_files_skipped(fixture_dir, brain_dir, monkeypatch):
 
     result = runner.invoke(app, ["ingest", str(fixture_dir)])
     assert result.exit_code == 0
-    assert "3 skipped" in result.output
+    assert "5 skipped" in result.output
 
     count_after = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     assert count_before == count_after
 
 
 def test_reingest_changed_file_replaces_chunks(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
 
     db_path = str(brain_dir / "corpus.db")
@@ -104,7 +128,7 @@ def test_reingest_changed_file_replaces_chunks(fixture_dir, brain_dir, monkeypat
 
 
 def test_stats_shows_corpus_info(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
     result = runner.invoke(app, ["stats"])
     assert result.exit_code == 0
@@ -113,10 +137,10 @@ def test_stats_shows_corpus_info(fixture_dir, brain_dir, monkeypatch):
 
 
 def test_stats_nonzero_after_ingest(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
     result = runner.invoke(app, ["stats"])
-    assert "3" in result.output  # 3 documents
+    assert "5" in result.output  # 5 documents
 
 
 def test_ingest_nonexistent_path(brain_dir):
@@ -131,7 +155,7 @@ def test_search_no_corpus_errors(brain_dir):
 
 
 def test_search_basic_renders_table(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
     result = runner.invoke(app, ["search", "word"])
     assert result.exit_code == 0
@@ -139,7 +163,7 @@ def test_search_basic_renders_table(fixture_dir, brain_dir, monkeypatch):
 
 
 def test_search_top_flag_limits_rows(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
     result = runner.invoke(app, ["search", "x", "-k", "2"])
     assert result.exit_code == 0
@@ -149,14 +173,14 @@ def test_search_top_flag_limits_rows(fixture_dir, brain_dir, monkeypatch):
 
 
 def test_search_empty_query_errors(brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     result = runner.invoke(app, ["search", "   "])
     assert result.exit_code != 0
     assert "Error" in result.output
 
 
 def test_search_embed_error_exits_nonzero(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
 
     from brain.embed import EmbedError
@@ -185,7 +209,7 @@ def test_ask_empty_query_exits_1(brain_dir):
 def test_ask_streams_answer_and_prints_sources(fixture_dir, brain_dir, monkeypatch):
     from types import SimpleNamespace
 
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
 
     tokens = ["The", " answer", " is", " 42."]
@@ -207,7 +231,7 @@ def test_ask_streams_answer_and_prints_sources(fixture_dir, brain_dir, monkeypat
 
 
 def test_ask_qaerror_exits_1(fixture_dir, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     runner.invoke(app, ["ingest", str(fixture_dir)])
 
     import httpx
@@ -231,7 +255,7 @@ def test_ask_qaerror_exits_1(fixture_dir, brain_dir, monkeypatch):
 
 
 def test_ingest_skips_hidden_directories(tmp_path, brain_dir, monkeypatch):
-    monkeypatch.setattr("brain.cli.embed.embed", _fake_embed)
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
     (tmp_path / "visible.md").write_text("visible content " * 50)
     hidden = tmp_path / ".hidden"
     hidden.mkdir()
@@ -246,3 +270,14 @@ def test_ingest_skips_hidden_directories(tmp_path, brain_dir, monkeypatch):
     paths = [r[0] for r in conn.execute("SELECT path FROM documents").fetchall()]
     assert not any(".hidden" in p or ".git" in p for p in paths)
     assert any("visible.md" in p for p in paths)
+
+
+def test_ingest_md_chunks_carry_heading_prefix(tmp_path, brain_dir, monkeypatch):
+    monkeypatch.setattr("brain.ingest.embed.embed", _fake_embed)
+    f = tmp_path / "sectioned.md"
+    f.write_text("# My Section\n\n" + "content " * 200)
+    runner.invoke(app, ["ingest", str(tmp_path)])
+    db_path = str(brain_dir / "corpus.db")
+    conn = storage.connect(db_path)
+    texts = [r[0] for r in conn.execute("SELECT text FROM chunks").fetchall()]
+    assert any("# My Section" in t for t in texts)

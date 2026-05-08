@@ -11,7 +11,8 @@ from rich.table import Table
 
 from brain import embed, qa, storage
 from brain import search as search_mod
-from brain.chunker import chunk_text
+from brain.ingest import SUPPORTED_EXTENSIONS, ingest_file
+from brain.parsers import ParseError
 
 app = typer.Typer(add_completion=False)
 console = Console()
@@ -33,7 +34,7 @@ def _walk_files(root: Path):
     for p in root.rglob("*"):
         if any(part.startswith(".") or part in _HIDDEN_DIRS for part in p.parts[len(root.parts):]):
             continue
-        if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
             yield p
 
 
@@ -50,7 +51,7 @@ def ingest(path: Path = typer.Argument(..., help="Directory to ingest")) -> None
 
     files = list(_walk_files(path))
     if not files:
-        console.print(f"No .md or .txt files found in {path}")
+        console.print(f"No supported files found in {path}")
         return
 
     processed = 0
@@ -83,32 +84,21 @@ def ingest(path: Path = typer.Argument(..., help="Directory to ingest")) -> None
                 continue
 
             try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
+                n_chunks = ingest_file(conn, file_path)
             except OSError as e:
                 console.print(f"[yellow]Warning:[/yellow] could not read {file_path}: {e}")
                 progress.advance(task)
                 continue
+            except ParseError as e:
+                console.print(f"[yellow]Warning:[/yellow] {e}")
+                progress.advance(task)
+                continue
+            except embed.EmbedError as e:
+                console.print(f"[yellow]Warning:[/yellow] embedding failed for {file_path}: {e}")
+                progress.advance(task)
+                continue
 
-            chunks = chunk_text(text)
-
-            if chunks:
-                try:
-                    embeddings = embed.embed(chunks)
-                except embed.EmbedError as e:
-                    console.print(f"[yellow]Warning:[/yellow] embedding failed for {file_path}: {e}")
-                    progress.advance(task)
-                    continue
-            else:
-                embeddings = []
-
-            if existing:
-                storage.delete_chunks_for_document(conn, existing[0])
-
-            doc_id = storage.upsert_document(conn, abs_path, mtime)
-            if chunks:
-                storage.insert_chunks(conn, doc_id, list(zip(chunks, embeddings)))
-                total_chunks += len(chunks)
-
+            total_chunks += n_chunks
             processed += 1
             progress.advance(task)
 
