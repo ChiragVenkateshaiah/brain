@@ -12,6 +12,8 @@ dependencies = [
     "rich",
     "numpy",
     "ollama",
+    "pypdf",
+    "beautifulsoup4",
 ]
 
 [project.optional-dependencies]
